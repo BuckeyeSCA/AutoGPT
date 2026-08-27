@@ -248,6 +248,7 @@ const codexProvider: CredentialsProviderData = {
   isSystemProvider: false,
   oAuthCallback: async () => codexCredential,
   mcpOAuthCallback: async () => codexCredential,
+  mcpStoreToken: async () => codexCredential,
   createAPIKeyCredentials: async () => codexCredential,
   createUserPasswordCredentials: async () => codexCredential,
   createHostScopedCredentials: async () => codexCredential,
