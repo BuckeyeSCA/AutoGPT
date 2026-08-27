@@ -32,7 +32,6 @@ import {
   workspaceItemToAttachment,
 } from "../../helpers/workspaceAttachments";
 import { ComposerPlusMenu } from "./components/ComposerPlusMenu";
-import { ComposerTray } from "./components/ComposerTray";
 import { DryRunToggleButton } from "./components/DryRunToggleButton";
 import { FileChips } from "./components/FileChips";
 import { MentionDropdown } from "./components/MentionDropdown";
@@ -72,7 +71,7 @@ interface Props {
   onDroppedFilesConsumed?: () => void;
   /** When true, the dry-run toggle is disabled (session is active and immutable). */
   hasSession?: boolean;
-  /** Session id for the dev-only token badge in the tray. */
+  /** Session id for the dev-only token badge in the composer footer. */
   sessionId?: string | null;
   /** When true, the submit button is hidden until there is something to send. */
   hideSubmitWhenEmpty?: boolean;
@@ -197,9 +196,9 @@ export function ChatInput({
     isTranscribing,
   });
 
-  // The composer restyle (flat card, chips relocated into the tray
-  // below) ships with the brain-dump experience; off keeps the original
-  // glowing composer with pill toggles in the footer.
+  // The composer restyle (flat card, no glow) ships with the brain-dump
+  // experience; off keeps the original glowing composer. Both layouts render
+  // the same footer chips -- the secondary tray they used to sit in is gone.
   const isBrainDumpEnabled = useGetFlag(Flag.ONBOARDING_BRAIN_DUMP);
 
   function handleChange(e: ChangeEvent<HTMLTextAreaElement>) {
@@ -227,13 +226,8 @@ export function ChatInput({
       ? "Transcribing..."
       : placeholder;
 
-  // Narrows to string, so neither render site needs to re-test sessionId.
+  // Narrows to string, so the render site needs no second sessionId test.
   const devtoolSessionId = isTokenDevtoolEnabled() ? sessionId : null;
-  // Matches what the tray actually holds. The connection picker is not behind
-  // CHAT_MODE_OPTION, so gating the tray on that flag hid the picker outright
-  // in brain-dump mode; the dry-run toggle and the devtool badge keep their
-  // own conditions.
-  const hasTrayItems = !hasSession || !isStreaming || Boolean(devtoolSessionId);
 
   const canSend =
     !disabled &&
@@ -338,21 +332,25 @@ export function ChatInput({
               disabled={isBusy}
             />
             {recipientPicker}
+            {/* Connection and tier are per-message settings sent with each
+                stream request, so they stay changeable between turns of a
+                session already underway. Hidden only while actively streaming,
+                when it is too late to affect the turn in flight. */}
             {(!hasSession || !isStreaming) && (
               <ConnectionPicker connectionLocked={hasSession} />
             )}
-            {!isBrainDumpEnabled &&
-              showAdvancedComposerControls &&
-              !hasSession && (
-                <DryRunToggleButton
-                  variant="pill"
-                  isDryRun={isDryRun}
-                  onToggle={handleToggleDryRun}
-                />
-              )}
-            {/* ComposerTray renders only under the brain-dump flag, so the
-                badge is duplicated here to stay reachable in both layouts. */}
-            {!isBrainDumpEnabled && devtoolSessionId && (
+            {/* DryRun is new-chat only: once a session exists its dry_run flag
+                is locked and read from session metadata (sessionDryRun in
+                useCopilotPage), with the banner in CopilotPage.tsx reflecting
+                the actual state. */}
+            {showAdvancedComposerControls && !hasSession && (
+              <DryRunToggleButton
+                variant="pill"
+                isDryRun={isDryRun}
+                onToggle={handleToggleDryRun}
+              />
+            )}
+            {devtoolSessionId && (
               <TokenDevtoolBadge
                 sessionId={devtoolSessionId}
                 className="ml-auto"
@@ -411,32 +409,6 @@ export function ChatInput({
           </div>
         </PromptInputFooter>
       </InputGroup>
-
-      {/* Mode and model are per-message settings sent with each stream request,
-          so they can be freely changed between turns in an existing session.
-          Hide only while actively streaming (too late to change for that turn).
-          DryRun is new-chat only: once a session exists its dry_run flag is
-          locked and read from session metadata (sessionDryRun in useCopilotPage),
-          with the banner in CopilotPage.tsx reflecting the actual state. */}
-      {Boolean(isBrainDumpEnabled) && hasTrayItems && (
-        <ComposerTray>
-          {(!hasSession || !isStreaming) && (
-            <ConnectionPicker connectionLocked={hasSession} />
-          )}
-          {showAdvancedComposerControls && !hasSession && (
-            <DryRunToggleButton
-              isDryRun={isDryRun}
-              onToggle={handleToggleDryRun}
-            />
-          )}
-          {devtoolSessionId && (
-            <TokenDevtoolBadge
-              sessionId={devtoolSessionId}
-              className="ml-auto"
-            />
-          )}
-        </ComposerTray>
-      )}
 
       {showWorkspaceFiles && (
         <WorkspaceFilePicker

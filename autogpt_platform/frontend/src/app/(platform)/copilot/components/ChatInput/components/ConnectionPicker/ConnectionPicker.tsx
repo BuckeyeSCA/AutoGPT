@@ -56,6 +56,7 @@ export function ConnectionPicker({ connectionLocked = false }: Props) {
     tier,
     setTier,
     showTiers,
+    hasConnectionChoice,
     isLoading,
     isError,
   } = useConnectionPicker();
@@ -97,14 +98,21 @@ export function ConnectionPicker({ connectionLocked = false }: Props) {
     disabled: !isSelectable(offer),
   }));
   const runsOnOwnPlan = active ? isLinkedAccount(active) : false;
-  const label = connectionLocked
+
+  // With no connection to choose between, naming it says nothing — a hosted
+  // user would read "AutoGPT Platform" on every chat and learn only that there
+  // is one. The tier is the live choice, so that is what the chip carries.
+  // A second connection makes the route itself a decision, and the label
+  // switches to it.
+  const showsTier = connectionLocked || !hasConnectionChoice;
+  const label = showsTier
     ? tierName(active, tier)
     : (active?.display_name ?? "Choose connection");
   // "ChatGPT · your plan". Spending your own subscription rather than the
   // platform's is the thing worth noticing before sending, so the chip says
   // so and carries the accent that goes with it.
   const triggerLabel =
-    runsOnOwnPlan && !connectionLocked ? `${label} · your plan` : label;
+    runsOnOwnPlan && !showsTier ? `${label} · your plan` : label;
 
   return (
     <Popover>
@@ -112,18 +120,20 @@ export function ConnectionPicker({ connectionLocked = false }: Props) {
         <button
           type="button"
           aria-label={
-            connectionLocked
+            showsTier
               ? `Model tier ${label} — change`
               : `Runs on ${triggerLabel} — change`
           }
           className={cn(
             "ml-2 inline-flex h-9 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium shadow-sm transition-colors",
-            runsOnOwnPlan && !connectionLocked
+            runsOnOwnPlan && !showsTier
               ? "border-accent/40 bg-accent/5 text-accent hover:bg-accent/10"
               : "border-border bg-background text-foreground hover:bg-muted",
           )}
         >
-          <Icon icon={KeyIcon} size={14} />
+          {/* The key stands for a credential. Against a tier name it would be
+              labelling reasoning depth as an account, so it is dropped. */}
+          {!showsTier && <Icon icon={KeyIcon} size={14} />}
           <span className="hidden sm:inline">{triggerLabel}</span>
           <Icon
             icon={ArrowDown01Icon}
@@ -137,7 +147,11 @@ export function ConnectionPicker({ connectionLocked = false }: Props) {
         align="start"
         className="w-[26rem] max-w-[calc(100vw-2rem)] border-border bg-popover p-0 text-popover-foreground"
       >
-        {!connectionLocked && (
+        {/* One row is nothing to choose between — the section would only
+            restate the chip. Two or more means a real alternative, or a locked
+            row explaining what an upgrade would add, and both are worth
+            reading. */}
+        {!connectionLocked && offers.length > 1 && (
           <>
             <SectionLabel>Runs on</SectionLabel>
             <div
