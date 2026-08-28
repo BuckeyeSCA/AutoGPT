@@ -10,7 +10,11 @@ import {
 import { useOAuthConnect } from "@/components/contextual/IntegrationsPanel/components/ConnectServiceDialog/components/DetailView/useOAuthConnect";
 
 import { useOnboardingWizardStore } from "../../store";
-import { hasLinkedSubscription, linkedModelsSentence } from "./helpers";
+import {
+  hasLinkedSubscription,
+  linkedModelsSentence,
+  linkedSubscriptionName,
+} from "./helpers";
 
 export function useConnectStep() {
   const queryClient = useQueryClient();
@@ -34,23 +38,25 @@ export function useConnectStep() {
       ? tiersQuery.data.data.providers
       : undefined;
 
+  function finishConnection() {
+    queryClient.invalidateQueries({
+      queryKey: getGetV2ListChatConnectionsQueryKey(),
+    });
+    nextStep();
+  }
+
   const { connect, isPending } = useOAuthConnect({
     provider: "codex",
-    onSuccess: () => {
-      // The next step's copy depends on what is connected, and so does the
-      // decision to show this step at all on a later visit.
-      queryClient.invalidateQueries({
-        queryKey: getGetV2ListChatConnectionsQueryKey(),
-      });
-      nextStep();
-    },
+    onSuccess: finishConnection,
   });
 
   return {
     connect,
+    finishConnection,
     isConnecting: isPending,
     skip: nextStep,
     isAlreadyLinked: hasLinkedSubscription(offers),
+    linkedSubscription: linkedSubscriptionName(offers),
     models: linkedModelsSentence(providers),
   };
 }

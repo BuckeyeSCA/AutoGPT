@@ -14,6 +14,7 @@ import { AIConnectionsSection } from "../AIConnectionsSection";
 function platform(isDefault: boolean): AIConnectionOffer {
   return {
     offer_id: "platform:deployment",
+    auth_provider: "platform",
     provider_family: "autogpt",
     display_name: "Self-hosted chat",
     auth_method: "deployment",
@@ -45,6 +46,7 @@ function platform(isDefault: boolean): AIConnectionOffer {
 function chatgpt(isDefault: boolean, id = "cred-1"): AIConnectionOffer {
   return {
     offer_id: `codex:${id}`,
+    auth_provider: "codex",
     provider_family: "openai",
     display_name: "ChatGPT",
     auth_method: "chatgpt_oauth",
@@ -73,9 +75,36 @@ function chatgpt(isDefault: boolean, id = "cred-1"): AIConnectionOffer {
   } as AIConnectionOffer;
 }
 
+function microsoft(isDefault: boolean, id = "cred-msft"): AIConnectionOffer {
+  return {
+    offer_id: `microsoft_365_copilot:${id}`,
+    auth_provider: "microsoft_365_copilot",
+    provider_family: "microsoft",
+    display_name: "Microsoft 365 Copilot",
+    auth_method: "device_oauth",
+    credential_id: id,
+    backed_by_label: "Your Microsoft Copilot plan",
+    description:
+      "New chats are backed by your Microsoft Copilot subscription and work context.",
+    state: "ready",
+    selectable: true,
+    is_default: isDefault,
+    tiers: [],
+    limitations: [],
+  } as AIConnectionOffer;
+}
+
+interface MockCredential {
+  id: string;
+  username?: string;
+  provider?: string;
+  title?: string;
+  scopes?: string[];
+}
+
 function mockTransports(
   offers: AIConnectionOffer[],
-  credentials: { id: string; username: string }[] = [],
+  credentials: MockCredential[] = [],
 ) {
   server.use(
     getGetV2ListChatConnectionsMockHandler200({ offers }),
@@ -83,11 +112,11 @@ function mockTransports(
     getGetV1ListCredentialsMockHandler200(
       credentials.map((credential) => ({
         id: credential.id,
-        provider: "codex",
+        provider: credential.provider ?? "codex",
         type: "oauth2" as const,
-        title: "ChatGPT for Codex",
-        scopes: [],
-        username: credential.username,
+        title: credential.title ?? "ChatGPT for Codex",
+        scopes: credential.scopes ?? [],
+        username: credential.username ?? null,
       })),
     ),
   );
@@ -115,6 +144,32 @@ describe("AIConnectionsSection", () => {
     render(<AIConnectionsSection />);
 
     expect(await screen.findByText("nick@example.com")).toBeDefined();
+  });
+
+  it("shows the Microsoft account and its granted access", async () => {
+    mockTransports(
+      [platform(false), microsoft(true)],
+      [
+        {
+          id: "cred-msft",
+          provider: "microsoft_365_copilot",
+          username: "nick@example.com",
+          title: "Nick Example",
+          scopes: ["User.Read", "Mail.Read", "Chat.Read"],
+        },
+      ],
+    );
+
+    render(<AIConnectionsSection />);
+
+    expect(await screen.findByText("nick@example.com")).toBeDefined();
+    expect(screen.getByText("Connected")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Manage" }));
+
+    expect(await screen.findByText("Nick Example")).toBeDefined();
+    expect(screen.getByText("Basic account profile")).toBeDefined();
+    expect(screen.getByText("Outlook mail")).toBeDefined();
+    expect(screen.getByText("Teams chats")).toBeDefined();
   });
 
   it("marks the saved default, and only that one", async () => {
