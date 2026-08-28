@@ -5,11 +5,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "@tanstack/react-query";
 
-import {
-  getGetV1ListCredentialsQueryKey,
-  postV1CreateCredentials,
-} from "@/app/api/__generated__/endpoints/integrations/integrations";
+import { postV1CreateCredentials } from "@/app/api/__generated__/endpoints/integrations/integrations";
 import { toast } from "@/components/molecules/Toast/use-toast";
+import { invalidateConnectionQueries } from "@/lib/react-query/invalidateConnections";
 
 import { apiKeyConnectSchema, type ApiKeyConnectFormValues } from "./schema";
 
@@ -51,9 +49,7 @@ export function useApiKeyConnectForm({ provider, onSuccess }: Args) {
       });
 
       toast({ title: "API key saved", variant: "success" });
-      await queryClient.invalidateQueries({
-        queryKey: getGetV1ListCredentialsQueryKey(),
-      });
+      await invalidateConnectionQueries(queryClient);
       onSuccess();
     } catch (error) {
       toast({

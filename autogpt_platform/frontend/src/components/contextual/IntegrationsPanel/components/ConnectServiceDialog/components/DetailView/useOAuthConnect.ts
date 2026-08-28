@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
-  getGetV1ListCredentialsQueryKey,
   getV1InitiateOauthFlow,
   postV1ExchangeOauthCodeForTokens,
 } from "@/app/api/__generated__/endpoints/integrations/integrations";
 import { toast } from "@/components/molecules/Toast/use-toast";
+import { invalidateConnectionQueries } from "@/lib/react-query/invalidateConnections";
 import {
   OAUTH_ERROR_POPUP_BLOCKED,
   openOAuthPopup,
@@ -114,9 +114,7 @@ export function useOAuthConnect({ provider, onSuccess }: Args) {
       });
 
       toast({ title: "Connected via OAuth", variant: "success" });
-      await queryClient.invalidateQueries({
-        queryKey: getGetV1ListCredentialsQueryKey(),
-      });
+      await invalidateConnectionQueries(queryClient);
       onSuccess();
     } catch (error) {
       // Close the dangling about:blank window only while this flow still
