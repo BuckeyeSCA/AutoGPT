@@ -35,6 +35,7 @@ import {
 import { extractDbSequence } from "./helpers/convertChatSessionToUiMessages";
 import { getLatestAssistantStatusMessage } from "./messageParts";
 import {
+  latestProviderFailure,
   parseProviderFailurePart,
   type ProviderFailure,
 } from "./providerFailure";
@@ -75,6 +76,14 @@ interface UseCopilotStreamArgs {
   userId?: string | null;
   sessionId: string | null;
   hydratedMessages: UIMessage[] | undefined;
+  /**
+   * The session's messages as the API sent them.
+   *
+   * Conversion to UIMessages merges rows and drops their metadata, so the
+   * persisted failure envelope does not survive it. This is the same data
+   * before that happens.
+   */
+  rawSessionMessages?: unknown[];
   /** Id of the first hydrated message of the turn the backend is still
    *  running — the point the GET-resume replay starts from. */
   activeTurnStartMessageId?: string | null;
@@ -88,6 +97,7 @@ export function useCopilotStream({
   userId = null,
   sessionId,
   hydratedMessages,
+  rawSessionMessages,
   activeTurnStartMessageId = null,
   hasActiveStream,
   refetchSession,
@@ -96,6 +106,11 @@ export function useCopilotStream({
   const queryClient = useQueryClient();
   const setInitialPrompt = useCopilotUIStore((s) => s.setInitialPrompt);
   const [rateLimitMessage, setRateLimitMessage] = useState<string | null>(null);
+  // A linked subscription that stopped accepting turns, as opposed to our own
+  // credits running out. Held separately because the answer is different.
+  const [providerLimit, setProviderLimit] = useState<ProviderFailure | null>(
+    null,
+  );
   function dismissRateLimit() {
     setRateLimitMessage(null);
   }
@@ -224,7 +239,7 @@ export function useCopilotStream({
       handleStreamError({
         error,
         providerFailure: failureForThisTurn,
-        onRateLimit: (message) => {
+        onRateLimit: (message, limitFailure) => {
           // Backend raises 429 BEFORE persisting the user message, so the
           // optimistic user bubble added by useChat is a lie. Restore the text
           // into the composer (via the same store slot URL pre-fills use) and
@@ -270,7 +285,23 @@ export function useCopilotStream({
               return next;
             });
           }
-          setRateLimitMessage(message);
+          // A provider's own limit is not answered by upgrading with us, so
+          // it opens the continue path instead of the plan dialog.
+          //
+          // Which limit it is turns on whether the server sent a failure
+          // envelope, not on which connection the turn ran on. Our own daily
+          // budget is refused at admission and arrives with no envelope; an
+          // upstream 429 always carries one. Reading the connection instead
+          // meant a self-host -- where the route is "platform" because the
+          // deployment holds the key -- was told "Daily AutoPilot limit
+          // reached, upgrade your plan" when its own OpenRouter or local
+          // gateway had rate-limited it. That is a claim about an account we
+          // do not bill, offering a plan that would not help.
+          if (limitFailure) {
+            setProviderLimit(limitFailure);
+          } else {
+            setRateLimitMessage(message);
+          }
         },
         onReconnect: () => handleReconnectRef.current(),
         isUserStoppingRef,
@@ -487,6 +518,20 @@ export function useCopilotStream({
     if (messages.length === 0) return;
     useCopilotStreamStore.getState().setMessageSnapshot(sessionId, messages);
   }, [sessionId, messages]);
+
+  // A failure the chat is still sitting on survives a reload, because the
+  // backend persisted the envelope onto the marker row for exactly this. It
+  // was only ever read from the live stream before, so refreshing, opening the
+  // chat in another tab, or closing the laptop took away the one control that
+  // offered a way out -- leaving the chat latched to the connection that had
+  // just refused it, with no way to say "continue on the other one".
+  useEffect(() => {
+    if (!sessionId || !rawSessionMessages?.length) return;
+    // A live failure is the fresher truth; never let history overwrite it.
+    setProviderLimit((current) =>
+      current ? current : latestProviderFailure(rawSessionMessages),
+    );
+  }, [rawSessionMessages, sessionId]);
 
   useEffect(() => {
     if (!sessionId || !hydratedMessages) return;
@@ -761,6 +806,8 @@ export function useCopilotStream({
     isUserStoppingRef,
     isUserStopping,
     rateLimitMessage,
+    providerLimit,
+    dismissProviderLimit: () => setProviderLimit(null),
     dismissRateLimit,
   };
 }
