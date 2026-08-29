@@ -20,6 +20,7 @@ import {
   Step,
   useOnboardingWizardStore,
 } from "./store";
+import { onboardingStepKey, trackOnboardingStep } from "./tracking";
 
 const LD_INIT_TIMEOUT_SECONDS = 5;
 
@@ -159,6 +160,26 @@ export function useOnboardingPage() {
     ) as Step;
     goToStep(target);
   }, [isReady, searchParams, goToStep, preparingStep, steps]);
+
+  // Report reaching a step, before the ceiling below is advanced past it.
+  //
+  // `>=` rather than `>` so a genuinely new user's first step still counts
+  // (their ceiling already reads 1). That same comparison discards the render
+  // that lands before the init effect above has clamped `currentStep`: a user
+  // resuming at step 3 transiently holds the store default of 1, and 1 >= 3 is
+  // false, so no spurious Welcome is reported. Going back re-renders an earlier
+  // step below the ceiling and is likewise ignored; the per-step guard in
+  // `trackOnboardingStep` covers coming forward again.
+  useEffect(() => {
+    // Gated on exactly what the page renders on. While `isOnboardingStateLoading`
+    // is true the wizard is still `null`, and that window contains the
+    // ONBOARDING_COMPLETE check that redirects finished users to /copilot — so
+    // reporting on `isReady` alone counted people the UI never showed a step to.
+    if (!isReady || isOnboardingStateLoading) return;
+    if (currentStep < readHighestStep()) return;
+    const key = onboardingStepKey(steps, currentStep);
+    if (key) trackOnboardingStep(key);
+  }, [isReady, isOnboardingStateLoading, currentStep, steps]);
 
   // Sync store → URL when step changes; record the new ceiling.
   useEffect(() => {
