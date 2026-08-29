@@ -1,8 +1,5 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
-
-import { getGetV2ListChatTransportsQueryKey } from "@/app/api/__generated__/endpoints/chat/chat";
 import { useGetV1CodexAccount } from "@/app/api/__generated__/endpoints/integrations/integrations";
 import type { AIConnectionOffer } from "@/app/api/__generated__/models/aIConnectionOffer";
 import { Button } from "@/components/atoms/Button/Button";
@@ -29,7 +26,6 @@ export function ManageConnectionDialog({
   account,
   onOpenChange,
 }: Props) {
-  const queryClient = useQueryClient();
   const credentialId = connection?.credential_id ?? null;
 
   // Asked for only while this dialog is open. Reading it leases a runtime
@@ -44,12 +40,7 @@ export function ManageConnectionDialog({
 
   const { connect, isPending: isReconnecting } = useOAuthConnect({
     provider: "codex",
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: getGetV2ListChatTransportsQueryKey(),
-      });
-      onOpenChange(false);
-    },
+    onSuccess: () => onOpenChange(false),
   });
 
   const { remove, isPending: isDisconnecting } = useDeleteIntegration();
@@ -59,9 +50,6 @@ export function ManageConnectionDialog({
     await remove([
       { id: credentialId, provider: "codex", name: account ?? "ChatGPT" },
     ]);
-    queryClient.invalidateQueries({
-      queryKey: getGetV2ListChatTransportsQueryKey(),
-    });
     onOpenChange(false);
   }
 
