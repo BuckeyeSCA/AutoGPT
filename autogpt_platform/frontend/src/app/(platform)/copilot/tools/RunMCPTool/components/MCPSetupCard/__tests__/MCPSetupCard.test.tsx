@@ -1,19 +1,29 @@
 import {
+  act,
   render,
   screen,
   fireEvent,
   waitFor,
   cleanup,
 } from "@/tests/integrations/test-utils";
+import {
+  CredentialsProvidersContext,
+  type CredentialsProvidersContextType,
+} from "@/providers/agent-credentials/credentials-provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ChainActionsContext,
+  type ChainActionEntry,
+} from "../../../../../components/ToolChain/chainActions";
 import { MCPSetupCard } from "../MCPSetupCard";
 
 // Mock the copilot chat actions used by MCPSetupCard
 const mockOnSend = vi.fn();
+let currentOnSend = mockOnSend;
 vi.mock(
   "../../../../../components/CopilotChatActionsProvider/useCopilotChatActions",
   () => ({
-    useCopilotChatActions: () => ({ onSend: mockOnSend }),
+    useCopilotChatActions: () => ({ onSend: currentOnSend }),
   }),
 );
 
@@ -34,9 +44,17 @@ vi.mock("@/app/api/__generated__/endpoints/mcp/mcp", () => ({
 // ``has_all_credentials=false`` snapshot so the existing tests don't have
 // to thread a connected state through MSW.  ``setMockLiveCreds`` lets
 // individual tests override the live state to verify the refresh path.
-let mockLiveCreds: Array<{ provider: string; host?: string | null }> = [];
+let mockLiveCreds: Array<{
+  provider: string;
+  host?: string | null;
+  mcp_auth_scheme?: "basic" | "bearer" | null;
+}> = [];
 function setMockLiveCreds(
-  next: Array<{ provider: string; host?: string | null }>,
+  next: Array<{
+    provider: string;
+    host?: string | null;
+    mcp_auth_scheme?: "basic" | "bearer" | null;
+  }>,
 ) {
   mockLiveCreds = next;
 }
@@ -78,6 +96,7 @@ describe("MCPSetupCard", () => {
   afterEach(() => {
     cleanup();
     setMockLiveCreds([]);
+    currentOnSend = mockOnSend;
   });
 
   it("renders setup message and connect button", () => {
@@ -158,6 +177,50 @@ describe("MCPSetupCard", () => {
     expect(screen.getByText(/does not support OAuth/)).toBeDefined();
   });
 
+  it("uses a unique manual credential input id for each mounted card", async () => {
+    const { postV2InitiateOauthLoginForAnMcpServer } = await import(
+      "@/app/api/__generated__/endpoints/mcp/mcp"
+    );
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer)
+      .mockResolvedValueOnce({
+        status: 400,
+        data: { detail: "No OAuth support" },
+        headers: new Headers(),
+      } as never)
+      .mockResolvedValueOnce({
+        status: 400,
+        data: { detail: "No OAuth support" },
+        headers: new Headers(),
+      } as never);
+
+    render(
+      <>
+        <MCPSetupCard output={makeSetupOutput()} />
+        <MCPSetupCard output={makeSetupOutput()} />
+      </>,
+    );
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /connect example\.com/i })[0],
+    );
+    await waitFor(() => {
+      expect(screen.getAllByPlaceholderText("Paste API token")).toHaveLength(1);
+    });
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /connect example\.com/i })[1],
+    );
+    await waitFor(() => {
+      expect(screen.getAllByPlaceholderText("Paste API token")).toHaveLength(2);
+    });
+
+    const inputs = screen.getAllByPlaceholderText("Paste API token");
+    expect(inputs[0].id).toBeTruthy();
+    expect(inputs[1].id).toBeTruthy();
+    expect(inputs[0].id).not.toBe(inputs[1].id);
+    for (const input of inputs) {
+      expect(document.querySelector(`label[for="${input.id}"]`)).not.toBeNull();
+    }
+  });
+
   it("shows connected state after manual token", async () => {
     const {
       postV2InitiateOauthLoginForAnMcpServer,
@@ -201,6 +264,111 @@ describe("MCPSetupCard", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/connected to example\.com/i)).toBeDefined();
+    });
+    expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+      server_url: "https://mcp.example.com/mcp",
+      token: "Bearer my-secret-token",
+    });
+  });
+
+  it("stores a selected Basic credential with an explicit prefix", async () => {
+    const {
+      postV2InitiateOauthLoginForAnMcpServer,
+      postV2StoreABearerTokenForAnMcpServer,
+    } = await import("@/app/api/__generated__/endpoints/mcp/mcp");
+
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "No OAuth" },
+      headers: new Headers(),
+    } as never);
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: "cred-basic",
+        provider: "mcp",
+        type: "oauth2",
+        title: "MCP: mcp.example.com",
+        scopes: [],
+      },
+      headers: new Headers(),
+    } as never);
+
+    render(<MCPSetupCard output={makeSetupOutput()} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /connect example\.com/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Paste API token")).toBeDefined();
+    });
+
+    fireEvent.change(
+      screen.getByLabelText("Authentication type for example.com"),
+      { target: { value: "basic" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("Basic authentication token for example.com"),
+      { target: { value: "  cGstbGYtYWJjZA==  " } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /use token/i }));
+
+    await waitFor(() => {
+      expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+        server_url: "https://mcp.example.com/mcp",
+        token: "Basic cGstbGYtYWJjZA==",
+      });
+    });
+  });
+
+  it("restores Basic for a saved manual credential during reconnect", async () => {
+    setMockLiveCreds([
+      {
+        provider: "mcp",
+        host: "https://mcp.example.com/mcp",
+        mcp_auth_scheme: "basic",
+      },
+    ]);
+    const {
+      postV2InitiateOauthLoginForAnMcpServer,
+      postV2StoreABearerTokenForAnMcpServer,
+    } = await import("@/app/api/__generated__/endpoints/mcp/mcp");
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "No OAuth" },
+      headers: new Headers(),
+    } as never);
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: "cred-basic",
+        provider: "mcp",
+        type: "oauth2",
+        title: "MCP: mcp.example.com",
+        scopes: [],
+      },
+      headers: new Headers(),
+    } as never);
+
+    render(<MCPSetupCard output={makeSetupOutput(undefined, true)} />);
+    fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText(/authentication type/i)).toBeDefined();
+    });
+
+    expect(
+      (screen.getByLabelText(/authentication type/i) as HTMLSelectElement)
+        .value,
+    ).toBe("basic");
+    fireEvent.change(screen.getByPlaceholderText("Paste API token"), {
+      target: { value: "new-encoded-value" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /use token/i }));
+
+    await waitFor(() => {
+      expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+        server_url: "https://mcp.example.com/mcp",
+        token: "Basic new-encoded-value",
+      });
     });
   });
 
@@ -439,12 +607,133 @@ describe("MCPSetupCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /use token/i }));
 
     await waitFor(() => {
-      // ``handleManualToken`` throws ``new Error("Failed to store token")``
-      // on non-2xx, which becomes the displayed error message.
-      expect(screen.getByText(/failed to store token/i)).toBeDefined();
+      expect(screen.getByText(/invalid token format/i)).toBeDefined();
     });
     // Crucial: live creds say "connected" but the failed token attempt
     // must keep the not-connected branch rendered so the user can retry.
     expect(screen.queryByText(/connected to example\.com/i)).toBeNull();
+  });
+
+  it("uses current provider and chat actions from a previously registered chain callback", async () => {
+    const { postV2InitiateOauthLoginForAnMcpServer } = await import(
+      "@/app/api/__generated__/endpoints/mcp/mcp"
+    );
+    const { openOAuthPopup } = await import("@/lib/oauth-popup");
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        login_url: "https://example.com/oauth",
+        state_token: "latest-state",
+      },
+      headers: new Headers(),
+    } as never);
+    vi.mocked(openOAuthPopup).mockReturnValueOnce({
+      promise: Promise.resolve({ code: "latest-code", state: "latest-state" }),
+      cleanup: { abort: vi.fn(), signal: new AbortController().signal },
+      popupBlocked: false,
+      fallbackBlocked: false,
+    });
+
+    const initialProviderCallback = vi.fn().mockResolvedValue({});
+    const latestProviderCallback = vi.fn().mockResolvedValue({});
+    const initialOnSend = vi.fn();
+    const latestOnSend = vi.fn();
+    currentOnSend = initialOnSend;
+
+    const initialProviders = {
+      mcp: { mcpOAuthCallback: initialProviderCallback },
+    } as unknown as CredentialsProvidersContextType;
+    const latestProviders = {
+      mcp: { mcpOAuthCallback: latestProviderCallback },
+    } as unknown as CredentialsProvidersContextType;
+    let registeredEntry: ChainActionEntry | null = null;
+    const chainActions = {
+      register: vi.fn((entry: ChainActionEntry) => {
+        registeredEntry = entry;
+      }),
+      unregister: vi.fn((_id: string) => {}),
+    };
+
+    function setupCard(
+      providers: CredentialsProvidersContextType,
+      retryInstruction: string,
+    ) {
+      return (
+        <CredentialsProvidersContext.Provider value={providers}>
+          <ChainActionsContext.Provider value={chainActions}>
+            <MCPSetupCard
+              output={makeSetupOutput()}
+              retryInstruction={retryInstruction}
+            />
+          </ChainActionsContext.Provider>
+        </CredentialsProvidersContext.Provider>
+      );
+    }
+
+    const { rerender } = render(
+      setupCard(initialProviders, "Initial retry instruction"),
+    );
+    await waitFor(() => expect(registeredEntry?.mcp).toBeDefined());
+    const previouslyRegisteredOnConnect = registeredEntry!.mcp!.onConnect;
+
+    currentOnSend = latestOnSend;
+    rerender(setupCard(latestProviders, "Latest retry instruction"));
+    expect(chainActions.register).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      previouslyRegisteredOnConnect();
+    });
+
+    await waitFor(() => {
+      expect(latestProviderCallback).toHaveBeenCalledWith(
+        "latest-code",
+        "latest-state",
+      );
+      expect(latestOnSend).toHaveBeenCalledWith("Latest retry instruction");
+    });
+    expect(initialProviderCallback).not.toHaveBeenCalled();
+    expect(initialOnSend).not.toHaveBeenCalled();
+  });
+
+  it("does not reinterpret an already prepared Basic chain credential", async () => {
+    const { postV2StoreABearerTokenForAnMcpServer } = await import(
+      "@/app/api/__generated__/endpoints/mcp/mcp"
+    );
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: {
+        id: "cred-chain-basic",
+        provider: "mcp",
+        type: "oauth2",
+        title: "MCP: mcp.example.com",
+        scopes: [],
+      },
+      headers: new Headers(),
+    } as never);
+
+    let registeredEntry: ChainActionEntry | null = null;
+    const chainActions = {
+      register: vi.fn((entry: ChainActionEntry) => {
+        registeredEntry = entry;
+      }),
+      unregister: vi.fn(),
+    };
+    render(
+      <ChainActionsContext.Provider value={chainActions}>
+        <MCPSetupCard output={makeSetupOutput()} />
+      </ChainActionsContext.Provider>,
+    );
+    await waitFor(() => expect(registeredEntry?.mcp).toBeDefined());
+
+    await act(async () => {
+      registeredEntry!.mcp!.onUseToken("Basic encoded-chain-value");
+    });
+
+    await waitFor(() => {
+      expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+        server_url: "https://mcp.example.com/mcp",
+        token: "Basic encoded-chain-value",
+      });
+    });
   });
 });

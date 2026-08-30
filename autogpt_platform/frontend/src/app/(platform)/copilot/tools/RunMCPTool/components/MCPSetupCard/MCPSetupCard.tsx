@@ -8,6 +8,11 @@ import {
 } from "@/app/api/__generated__/endpoints/mcp/mcp";
 import type { SetupRequirementsResponse } from "@/app/api/__generated__/models/setupRequirementsResponse";
 import { Button } from "@/components/atoms/Button/Button";
+import {
+  detectMCPAuthScheme,
+  prepareMCPAuthCredential,
+  type MCPAuthScheme,
+} from "@/lib/mcp-auth";
 import { openOAuthPopup } from "@/lib/oauth-popup";
 import { CredentialsProvidersContext } from "@/providers/agent-credentials/credentials-provider";
 import { useContext, useEffect, useId, useRef, useState } from "react";
@@ -37,13 +42,14 @@ interface Props {
  *
  * OAuth flow: initiate login → popup → exchange code for tokens.
  * Fallback: if the server doesn't support MCP OAuth (400), prompts the user
- * to provide an API token manually.
+ * to provide an API credential manually.
  */
 export function MCPSetupCard({ output, retryInstruction }: Props) {
   const { onSend } = useCopilotChatActions();
   const allProviders = useContext(CredentialsProvidersContext);
   const chainActions = useContext(ChainActionsContext);
   const actionId = useId();
+  const manualTokenInputId = `${actionId}-manual-auth-token`;
 
   // setup_info.agent_id is set to the server_url in the backend
   const serverUrl = output.setup_info.agent_id;
@@ -87,19 +93,27 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
   // a still-valid persisted snapshot — see review for the
   // initiallyConnected=false + 5xx race that surfaces a bare Connect
   // button despite an existing cred.
-  const liveHasCred: boolean | "unknown" = !Array.isArray(liveCredsRes)
-    ? "unknown"
-    : liveCredsRes.some(
+  const liveCredential = !Array.isArray(liveCredsRes)
+    ? null
+    : liveCredsRes.find(
         (c) =>
           c.provider === "mcp" &&
           typeof c.host === "string" &&
           normalizeMcpUrl(c.host) === normalizedServer,
       );
+  const liveHasCred: boolean | "unknown" = !Array.isArray(liveCredsRes)
+    ? "unknown"
+    : Boolean(liveCredential);
+  const storedManualAuthScheme: MCPAuthScheme =
+    liveCredential?.mcp_auth_scheme === "basic" ? "basic" : "bearer";
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showManualToken, setShowManualToken] = useState(false);
   const [manualToken, setManualToken] = useState("");
+  const [manualAuthScheme, setManualAuthScheme] =
+    useState<MCPAuthScheme>("bearer");
+  const [manualAuthSchemeTouched, setManualAuthSchemeTouched] = useState(false);
   // ``localConnected`` is set ONLY when the user successfully completes
   // OAuth / manual-token in this component instance.  It is NOT seeded
   // from ``initiallyConnected`` — that path is handled via ``liveSays``
@@ -114,6 +128,12 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
   // on the next attempt so the user can retry.
   const [forceDisconnected, setForceDisconnected] = useState(false);
   const oauthAbortRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (!manualAuthSchemeTouched && !manualToken.trim()) {
+      setManualAuthScheme(storedManualAuthScheme);
+    }
+  }, [manualAuthSchemeTouched, manualToken, storedManualAuthScheme]);
 
   // Combined view:
   //   1. ``forceDisconnected`` (set by the catch block) wins.
@@ -209,7 +229,7 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
       if (err?.status === 400) {
         setShowManualToken(true);
         setError(
-          "This server does not support OAuth sign-in. Please enter an API token manually.",
+          "This server does not support OAuth sign-in. Choose how its API credential should be sent.",
         );
       } else if (
         typeof err?.message === "string" &&
@@ -234,7 +254,13 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
     // present the same shape to readers.  See the comment on
     // ``handleConnect``'s guard for the double-click race this prevents.
     if (loading) return;
-    const token = (tokenArg ?? manualToken).trim();
+    // Chain rows already canonicalize their value with the selected scheme.
+    // Preparing tokenArg again here could silently flip Basic back to this
+    // hidden card's scheme.
+    const token =
+      tokenArg === undefined
+        ? prepareMCPAuthCredential(manualToken, manualAuthScheme)
+        : tokenArg.trim();
     if (!token) return;
     setLoading(true);
     setError(null);
@@ -243,8 +269,15 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
         server_url: serverUrl,
         token,
       });
-      if (!(res.status >= 200 && res.status < 300))
-        throw new Error("Failed to store token");
+      if (!(res.status >= 200 && res.status < 300)) {
+        const detail =
+          res.data && typeof res.data === "object" && "detail" in res.data
+            ? res.data.detail
+            : null;
+        throw new Error(
+          typeof detail === "string" ? detail : "Failed to store token",
+        );
+      }
       // Only clear the force-disconnect override AFTER the API confirms
       // the token was stored.  Clearing it before the await would let
       // ``liveHasCred=true`` (from an existing stale cred) re-render the
@@ -269,6 +302,14 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
     }
   }
 
+  const handleConnectRef = useRef(handleConnect);
+  const handleManualTokenRef = useRef(handleManualToken);
+
+  useEffect(() => {
+    handleConnectRef.current = handleConnect;
+    handleManualTokenRef.current = handleManualToken;
+  });
+
   // Inside a tool chain the card renders nothing itself — it registers an
   // MCP row with the chain's connectors table and stays mounted (hidden)
   // as the state machine driving that row's callbacks.
@@ -286,15 +327,15 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
         loading,
         error,
         showManualToken,
-        onConnect: handleConnect,
+        authScheme: manualAuthScheme,
+        onConnect: () => void handleConnectRef.current(),
         onUseToken: (token) => {
           setManualToken(token);
-          void handleManualToken(token);
+          void handleManualTokenRef.current(token);
         },
       },
     });
     return () => chainActions.unregister(actionId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleConnect/handleManualToken capture latest state each registration
   }, [
     chainActions,
     actionId,
@@ -302,6 +343,7 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
     loading,
     error,
     showManualToken,
+    manualAuthScheme,
     serverUrl,
     service,
   ]);
@@ -356,26 +398,70 @@ export function MCPSetupCard({ output, retryInstruction }: Props) {
         )}
 
         {showManualToken && (
-          <div className="mt-3 flex gap-2">
-            <input
-              type="password"
-              aria-label={`API token for ${service}`}
-              placeholder="Paste API token"
-              value={manualToken}
-              onChange={(e) => setManualToken(e.target.value)}
-              onKeyDown={(e) =>
-                e.key === "Enter" && !loading && handleManualToken()
-              }
-              className="flex-1 rounded border px-2 py-1 text-sm"
-            />
-            <Button
-              variant="secondary"
-              size="small"
-              onClick={() => handleManualToken()}
-              disabled={loading || !manualToken.trim()}
+          <div className="mt-3 grid gap-2">
+            <label className="grid gap-1 text-xs font-medium text-gray-700">
+              Authentication type
+              <select
+                aria-label={`Authentication type for ${service}`}
+                value={manualAuthScheme}
+                onChange={(e) => {
+                  setManualAuthScheme(e.target.value as MCPAuthScheme);
+                  setManualAuthSchemeTouched(true);
+                }}
+                disabled={loading}
+                className="rounded border bg-background px-2 py-1.5 text-sm font-normal"
+              >
+                <option value="bearer">API token (Bearer)</option>
+                <option value="basic">Basic authentication</option>
+              </select>
+            </label>
+            <label
+              htmlFor={manualTokenInputId}
+              className="text-xs font-medium text-gray-700"
             >
-              Use Token
-            </Button>
+              {manualAuthScheme === "basic"
+                ? "Basic authentication token"
+                : "API token"}
+            </label>
+            <p className="text-xs text-gray-500">
+              {manualAuthScheme === "basic"
+                ? 'Paste the value after "Basic", or paste the complete Authorization header.'
+                : "Paste the API token itself. AutoGPT will send it using Bearer authentication."}
+            </p>
+            <div className="flex gap-2">
+              <input
+                id={manualTokenInputId}
+                type="password"
+                aria-label={`${
+                  manualAuthScheme === "basic"
+                    ? "Basic authentication token"
+                    : "API token"
+                } for ${service}`}
+                placeholder="Paste API token"
+                value={manualToken}
+                onChange={(e) => {
+                  const nextToken = e.target.value;
+                  setManualToken(nextToken);
+                  const detected = detectMCPAuthScheme(nextToken);
+                  if (detected) {
+                    setManualAuthScheme(detected);
+                    setManualAuthSchemeTouched(true);
+                  }
+                }}
+                onKeyDown={(e) =>
+                  e.key === "Enter" && !loading && handleManualToken()
+                }
+                className="flex-1 rounded border px-2 py-1 text-sm"
+              />
+              <Button
+                variant="secondary"
+                size="small"
+                onClick={() => handleManualToken()}
+                disabled={loading || !manualToken.trim()}
+              >
+                Use Token
+              </Button>
+            </div>
           </div>
         )}
       </div>

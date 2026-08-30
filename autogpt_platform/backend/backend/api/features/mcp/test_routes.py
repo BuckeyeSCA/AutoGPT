@@ -159,6 +159,38 @@ class TestDiscoverTools:
         )
 
     @pytest.mark.asyncio(loop_scope="session")
+    async def test_discover_tools_invalid_stored_credential_surfaces_reconnect(
+        self, client
+    ):
+        stored_cred = OAuth2Credentials(
+            provider="mcp",
+            title="MCP: example.com",
+            access_token=SecretStr("Authorization: Digest abc"),
+            scopes=[],
+            metadata={"mcp_server_url": "https://mcp.example.com/mcp"},
+        )
+
+        with (
+            patch(
+                "backend.api.features.mcp.routes.auto_lookup_mcp_credential",
+                new_callable=AsyncMock,
+                return_value=stored_cred,
+            ),
+            patch(
+                "backend.api.features.mcp.routes.invalidate_mcp_credential",
+                new_callable=AsyncMock,
+            ) as invalidate,
+        ):
+            response = await client.post(
+                "/discover-tools",
+                json={"server_url": "https://mcp.example.com/mcp"},
+            )
+
+        assert response.status_code == 401
+        assert "reconnect" in response.json()["detail"].lower()
+        invalidate.assert_awaited_once_with("test-user-id", stored_cred.id)
+
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_discover_tools_mcp_error(self, client):
         with (
             patch("backend.api.features.mcp.routes.MCPClient") as MockClient,
@@ -484,6 +516,61 @@ class TestStoreToken:
         mock_cm.create.assert_called_once()
 
     @pytest.mark.asyncio(loop_scope="session")
+    async def test_stored_manual_token_is_reused_by_discovery(self, client):
+        """A manual token must survive the real auto-lookup path on retry."""
+        with patch("backend.api.features.mcp.routes.creds_manager") as mock_cm:
+            mock_cm.store.get_creds_by_provider = AsyncMock(return_value=[])
+            mock_cm.create = AsyncMock()
+
+            store_response = await client.post(
+                "/token",
+                json={
+                    "server_url": "https://mcp.example.com/mcp",
+                    "token": "Basic encoded-value",
+                },
+            )
+
+        assert store_response.status_code == 200
+        create_call = mock_cm.create.await_args
+        assert create_call is not None
+        stored_credential = create_call.args[1]
+        assert isinstance(stored_credential, OAuth2Credentials)
+        assert stored_credential.access_token_expires_at is None
+
+        with (
+            patch(
+                "backend.blocks.mcp.helpers.IntegrationCredentialsManager"
+            ) as manager_cls,
+            patch("backend.api.features.mcp.routes.MCPClient") as client_cls,
+        ):
+            manager = manager_cls.return_value
+            manager.store.get_creds_by_provider = AsyncMock(
+                return_value=[stored_credential]
+            )
+            manager.refresh_if_needed = AsyncMock(
+                side_effect=AssertionError("manual credentials must not refresh")
+            )
+            mcp_client = client_cls.return_value
+            mcp_client.initialize = AsyncMock(
+                return_value={
+                    "protocolVersion": "2025-03-26",
+                    "serverInfo": {"name": "test-server"},
+                }
+            )
+            mcp_client.list_tools = AsyncMock(return_value=[])
+
+            discover_response = await client.post(
+                "/discover-tools",
+                json={"server_url": "https://mcp.example.com/mcp"},
+            )
+
+        assert discover_response.status_code == 200
+        client_cls.assert_called_once_with(
+            "https://mcp.example.com/mcp", auth_token="Basic encoded-value"
+        )
+        manager.refresh_if_needed.assert_not_awaited()
+
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_store_token_blank_rejected(self, client):
         """Blank token string (after stripping) should return 422."""
         response = await client.post(
@@ -497,7 +584,7 @@ class TestStoreToken:
         assert response.status_code == 422
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_store_token_replaces_old_credential(self, client):
+    async def test_store_token_updates_existing_credential_in_place(self, client):
         old_cred = OAuth2Credentials(
             provider="mcp",
             title="MCP: mcp.example.com",
@@ -508,6 +595,7 @@ class TestStoreToken:
         with patch("backend.api.features.mcp.routes.creds_manager") as mock_cm:
             mock_cm.store.get_creds_by_provider = AsyncMock(return_value=[old_cred])
             mock_cm.create = AsyncMock()
+            mock_cm.update = AsyncMock()
             mock_cm.store.delete_creds_by_id = AsyncMock()
 
             response = await client.post(
@@ -519,9 +607,111 @@ class TestStoreToken:
             )
 
         assert response.status_code == 200
-        mock_cm.store.delete_creds_by_id.assert_called_once_with(
-            "test-user-id", old_cred.id
+        assert response.json()["id"] == old_cred.id
+        mock_cm.create.assert_not_awaited()
+        mock_cm.update.assert_awaited_once()
+        update_call = mock_cm.update.await_args
+        assert update_call is not None
+        user_id, updated = update_call.args
+        assert user_id == "test-user-id"
+        assert updated.id == old_cred.id
+        assert updated.access_token.get_secret_value() == "Bearer new-token"
+        assert updated.metadata["mcp_auth_scheme"] == "bearer"
+        mock_cm.store.delete_creds_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_store_token_preserves_all_matching_credential_ids(self, client):
+        old_creds = [
+            OAuth2Credentials(
+                provider="mcp",
+                title=f"MCP credential {index}",
+                access_token=SecretStr(f"old-token-{index}"),
+                scopes=["existing-scope"],
+                metadata={"mcp_server_url": "https://mcp.example.com/mcp"},
+            )
+            for index in range(2)
+        ]
+        with patch("backend.api.features.mcp.routes.creds_manager") as mock_cm:
+            mock_cm.store.get_creds_by_provider = AsyncMock(return_value=old_creds)
+            mock_cm.create = AsyncMock()
+            mock_cm.update = AsyncMock()
+            mock_cm.store.delete_creds_by_id = AsyncMock()
+
+            response = await client.post(
+                "/token",
+                json={
+                    "server_url": "https://mcp.example.com/mcp",
+                    "token": "Basic encoded-value",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["id"] == old_creds[-1].id
+        assert response.json()["mcp_auth_scheme"] == "basic"
+        mock_cm.create.assert_not_awaited()
+        assert mock_cm.update.await_count == 2
+        updated_creds = [call.args[1] for call in mock_cm.update.await_args_list]
+        assert [cred.id for cred in updated_creds] == [cred.id for cred in old_creds]
+        assert all(
+            cred.access_token.get_secret_value() == "Basic encoded-value"
+            for cred in updated_creds
         )
+        assert all(cred.scopes == ["existing-scope"] for cred in updated_creds)
+        mock_cm.store.delete_creds_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_store_token_does_not_mutate_managed_matching_credential(
+        self, client
+    ):
+        managed = OAuth2Credentials(
+            provider="mcp",
+            title="Managed MCP",
+            access_token=SecretStr("managed-token"),
+            scopes=[],
+            metadata={"mcp_server_url": "https://mcp.example.com/mcp"},
+            is_managed=True,
+        )
+        with patch("backend.api.features.mcp.routes.creds_manager") as mock_cm:
+            mock_cm.store.get_creds_by_provider = AsyncMock(return_value=[managed])
+            mock_cm.create = AsyncMock()
+            mock_cm.update = AsyncMock()
+
+            response = await client.post(
+                "/token",
+                json={
+                    "server_url": "https://mcp.example.com/mcp",
+                    "token": "user-token",
+                },
+            )
+
+        assert response.status_code == 200
+        mock_cm.update.assert_not_awaited()
+        mock_cm.create.assert_awaited_once()
+        create_call = mock_cm.create.await_args
+        assert create_call is not None
+        created = create_call.args[1]
+        assert created.id != managed.id
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_store_token_fails_closed_when_existing_lookup_fails(self, client):
+        with patch("backend.api.features.mcp.routes.creds_manager") as mock_cm:
+            mock_cm.store.get_creds_by_provider = AsyncMock(
+                side_effect=RuntimeError("database unavailable")
+            )
+            mock_cm.create = AsyncMock()
+            mock_cm.update = AsyncMock()
+
+            response = await client.post(
+                "/token",
+                json={
+                    "server_url": "https://mcp.example.com/mcp",
+                    "token": "new-token",
+                },
+            )
+
+        assert response.status_code == 503
+        mock_cm.create.assert_not_awaited()
+        mock_cm.update.assert_not_awaited()
 
 
 class TestSSRFValidation:

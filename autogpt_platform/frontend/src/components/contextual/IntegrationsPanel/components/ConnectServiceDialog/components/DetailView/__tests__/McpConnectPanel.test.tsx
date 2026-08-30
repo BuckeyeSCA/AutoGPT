@@ -19,6 +19,16 @@ vi.mock("@/app/api/__generated__/endpoints/mcp/mcp", () => ({
   postV2StoreABearerTokenForAnMcpServer: vi.fn(),
 }));
 
+let mockSavedCredentials: Array<{
+  provider: string;
+  host?: string | null;
+  mcp_auth_scheme?: "basic" | "bearer" | null;
+}> = [];
+vi.mock("@/app/api/__generated__/endpoints/integrations/integrations", () => ({
+  getGetV1ListCredentialsQueryKey: () => ["credentials"],
+  useGetV1ListCredentials: () => ({ data: mockSavedCredentials }),
+}));
+
 function makeApiError(status: number, detail = "boom"): Error {
   const err = new Error(detail) as Error & {
     status: number;
@@ -32,7 +42,8 @@ function makeApiError(status: number, detail = "boom"): Error {
 
 describe("McpConnectPanel", () => {
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockSavedCredentials = [];
     cleanup();
   });
 
@@ -63,9 +74,11 @@ describe("McpConnectPanel", () => {
       "@/app/api/__generated__/endpoints/mcp/mcp"
     );
 
-    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockRejectedValueOnce(
-      makeApiError(400, "OAuth not supported"),
-    );
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "OAuth not supported" },
+      headers: new Headers(),
+    } as never);
 
     render(<McpConnectPanel onSuccess={() => {}} />);
 
@@ -100,9 +113,11 @@ describe("McpConnectPanel", () => {
       cleanup: { abort: vi.fn() },
     } as never);
 
-    vi.mocked(postV2ExchangeOauthCodeForMcpTokens).mockRejectedValueOnce(
-      makeApiError(400, "bad code"),
-    );
+    vi.mocked(postV2ExchangeOauthCodeForMcpTokens).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "bad code" },
+      headers: new Headers(),
+    } as never);
 
     render(<McpConnectPanel onSuccess={() => {}} />);
 
@@ -156,7 +171,98 @@ describe("McpConnectPanel", () => {
     });
     expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
       server_url: "https://mcp.example.com",
-      token: "secret-bearer-token",
+      token: "Bearer secret-bearer-token",
+    });
+  });
+
+  it("submits a selected Basic credential with an explicit prefix", async () => {
+    const {
+      postV2InitiateOauthLoginForAnMcpServer,
+      postV2StoreABearerTokenForAnMcpServer,
+    } = await import("@/app/api/__generated__/endpoints/mcp/mcp");
+
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "OAuth not supported" },
+      headers: new Headers(),
+    } as never);
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: { ok: true },
+      headers: new Headers(),
+    } as never);
+
+    render(<McpConnectPanel onSuccess={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/server url/i), {
+      target: { value: "https://mcp.example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Authentication type")).toBeDefined();
+    });
+
+    fireEvent.change(screen.getByLabelText("Authentication type"), {
+      target: { value: "basic" },
+    });
+    expect(screen.getByText("Basic authentication token")).toBeDefined();
+    fireEvent.change(screen.getByPlaceholderText(/paste api token/i), {
+      target: { value: "  cGstbGYtYWJjZA==  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save token/i }));
+
+    await waitFor(() => {
+      expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+        server_url: "https://mcp.example.com",
+        token: "Basic cGstbGYtYWJjZA==",
+      });
+    });
+  });
+
+  it("restores the saved Basic scheme for the same server", async () => {
+    mockSavedCredentials = [
+      {
+        provider: "mcp",
+        host: "https://mcp.example.com",
+        mcp_auth_scheme: "basic",
+      },
+    ];
+    const {
+      postV2InitiateOauthLoginForAnMcpServer,
+      postV2StoreABearerTokenForAnMcpServer,
+    } = await import("@/app/api/__generated__/endpoints/mcp/mcp");
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer).mockResolvedValueOnce({
+      status: 400,
+      data: { detail: "OAuth not supported" },
+      headers: new Headers(),
+    } as never);
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 200,
+      data: { ok: true },
+      headers: new Headers(),
+    } as never);
+
+    render(<McpConnectPanel onSuccess={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/server url/i), {
+      target: { value: "https://mcp.example.com/" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Authentication type")).toBeDefined();
+    });
+    expect(
+      (screen.getByLabelText("Authentication type") as HTMLSelectElement).value,
+    ).toBe("basic");
+
+    fireEvent.change(screen.getByPlaceholderText(/paste api token/i), {
+      target: { value: "new-encoded-value" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save token/i }));
+
+    await waitFor(() => {
+      expect(postV2StoreABearerTokenForAnMcpServer).toHaveBeenCalledWith({
+        server_url: "https://mcp.example.com/",
+        token: "Basic new-encoded-value",
+      });
     });
   });
 
@@ -190,6 +296,71 @@ describe("McpConnectPanel", () => {
     expect(screen.getByRole("button", { name: /connect/i })).toBeDefined();
   });
 
+  it("discards manual credentials when the server URL changes", async () => {
+    const {
+      postV2InitiateOauthLoginForAnMcpServer,
+      postV2StoreABearerTokenForAnMcpServer,
+    } = await import("@/app/api/__generated__/endpoints/mcp/mcp");
+
+    vi.mocked(postV2InitiateOauthLoginForAnMcpServer)
+      .mockResolvedValueOnce({
+        status: 400,
+        data: { detail: "OAuth not supported" },
+        headers: new Headers(),
+      } as never)
+      .mockResolvedValueOnce({
+        status: 400,
+        data: { detail: "OAuth not supported" },
+        headers: new Headers(),
+      } as never);
+
+    render(<McpConnectPanel onSuccess={() => {}} />);
+
+    const urlInput = screen.getByLabelText(/server url/i);
+    fireEvent.change(urlInput, {
+      target: { value: "https://server-a.example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Authentication type")).toBeDefined();
+    });
+    fireEvent.change(screen.getByLabelText("Authentication type"), {
+      target: { value: "basic" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/paste api token/i), {
+      target: { value: "credential-for-server-a" },
+    });
+
+    fireEvent.change(urlInput, {
+      target: { value: "https://server-b.example.com" },
+    });
+
+    expect(screen.queryByLabelText("Authentication type")).toBeNull();
+    expect(screen.queryByPlaceholderText(/paste api token/i)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /connect/i }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Authentication type")).toBeDefined();
+    });
+    expect(
+      (screen.getByLabelText("Authentication type") as HTMLSelectElement).value,
+    ).toBe("bearer");
+    expect(
+      (screen.getByPlaceholderText(/paste api token/i) as HTMLInputElement)
+        .value,
+    ).toBe("");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: /save token/i,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(postV2StoreABearerTokenForAnMcpServer).not.toHaveBeenCalled();
+  });
+
   it("surfaces an error when bearer-token submission fails", async () => {
     const {
       postV2InitiateOauthLoginForAnMcpServer,
@@ -212,9 +383,11 @@ describe("McpConnectPanel", () => {
       expect(screen.getByPlaceholderText(/paste api token/i)).toBeDefined();
     });
 
-    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockRejectedValueOnce(
-      makeApiError(401, "invalid token"),
-    );
+    vi.mocked(postV2StoreABearerTokenForAnMcpServer).mockResolvedValueOnce({
+      status: 401,
+      data: { detail: "invalid token" },
+      headers: new Headers(),
+    } as never);
 
     fireEvent.change(screen.getByPlaceholderText(/paste api token/i), {
       target: { value: "wrong-token" },
