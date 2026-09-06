@@ -57,7 +57,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Python dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-py3.12-${{ hashFiles('autogpt_platform/backend/poetry.lock') }}
@@ -101,7 +101,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Python dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-py3.12-libs-${{ hashFiles('autogpt_platform/autogpt_libs/poetry.lock') }}
@@ -142,7 +142,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up Python dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('autogpt_platform/backend/poetry.lock') }}
@@ -337,7 +337,7 @@ jobs:
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
       - name: Set up Python dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('autogpt_platform/backend/poetry.lock') }}
