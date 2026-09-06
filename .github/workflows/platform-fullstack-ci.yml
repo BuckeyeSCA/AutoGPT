@@ -74,7 +74,7 @@ jobs:
           curl -sSL https://install.python-poetry.org | POETRY_VERSION=$POETRY_VERSION python3 -
 
       - name: Set up Backend - Set up dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-${{ hashFiles('autogpt_platform/backend/poetry.lock') }}
@@ -212,7 +212,7 @@ jobs:
 
       - name: Set up tests - Cache E2E test data
         id: e2e-data-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /tmp/e2e_test_data.sql
           key: e2e-test-data-${{ hashFiles('autogpt_platform/backend/test/e2e_test_data.py', 'autogpt_platform/backend/backend/data/user.py', 'autogpt_platform/backend/migrations/**', '.github/workflows/platform-fullstack-ci.yml') }}
@@ -295,7 +295,7 @@ jobs:
           cache-dependency-path: autogpt_platform/frontend/pnpm-lock.yaml
 
       - name: Set up tests - Cache Playwright browsers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('autogpt_platform/frontend/pnpm-lock.yaml') }}

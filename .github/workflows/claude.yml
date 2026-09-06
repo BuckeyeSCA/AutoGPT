@@ -54,7 +54,7 @@ jobs:
           python-version: "3.11"  # Use standard version matching CI
 
       - name: Set up Python dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-${{ hashFiles('autogpt_platform/backend/poetry.lock') }}
@@ -125,7 +125,7 @@ jobs:
       # Phase 1: Cache and load Docker images for faster setup
       - name: Set up Docker image cache
         id: docker-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/docker-cache
           # Use a versioned key for cache invalidation when image list changes
