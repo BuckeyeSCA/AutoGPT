@@ -73,7 +73,7 @@
     "@tanstack/react-table": "8.21.3",
     "@types/jaro-winkler": "0.2.4",
     "@vercel/analytics": "1.5.0",
-    "@vercel/speed-insights": "1.2.0",
+    "@vercel/speed-insights": "2.0.0",
     "@xyflow/react": "12.9.2",
     "ai": "6.0.134",
     "bcryptjs": "3.0.3",
